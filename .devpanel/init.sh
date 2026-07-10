@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="$APP_ROOT/vendor/bin:$PATH"
 if [ -n "${DEBUG_SCRIPT:-}" ]; then
   set -x
 fi
@@ -34,20 +35,24 @@ else
   time source .devpanel/composer_setup.sh
   echo
 fi
-time composer -n update --no-progress
+time composer -n install --no-progress
 
 #== Create the private files directory.
 if [ ! -d private ]; then
   echo
   echo 'Create the private files directory.'
-  time mkdir private
+  time mkdir -m 775 private
+else
+  sudo chmod 775 -R private
 fi
 
 #== Create the config sync directory.
 if [ ! -d config/sync ]; then
   echo
   echo 'Create the config sync directory.'
-  time mkdir -p config/sync
+  time mkdir -pm 775 config/sync
+else
+  sudo chmod 775 -R config
 fi
 
 #== Install Drupal.
@@ -58,13 +63,20 @@ if [ -z "$(drush status --field=db-status)" ]; then
     :
   done
 
+  if grep '"drupal/core-recommended": "^11.3' composer.json &> /dev/null; then
+    # Update to Drupal 11.4 after installation succeeds.
+    chmod +w web/sites/default
+    time composer -n update --no-progress
+    time composer scaffold
+    time drush -n updb
+  fi
+
   echo
   echo 'Enable Automatic Updates.'
   drush -n cset --input-format=yaml package_manager.settings additional_trusted_composer_plugins '["cweagans/composer-patches","drupal/site_template_helper","symfony/runtime"]'
   drush -n cset --input-format=yaml package_manager.settings include_unknown_files_in_project_root '["assets","patches.json","patches.lock.json"]'
   drush -n cset --input-format=yaml automatic_updates.settings unattended '{"method":"console","level":"patch"}'
   time drush ev '\Drupal::moduleHandler()->invoke("automatic_updates", "modules_installed", [[], FALSE])'
-  time php web/modules/contrib/automatic_updates/auto-update
 
   echo
   time drush cr
@@ -82,6 +94,12 @@ echo 'Populate caches.'
 time drush cache:warm &> /dev/null || :
 time .devpanel/warm
 time .devpanel/warm /user/login
+
+#== Fix ownership for strict permissions.
+echo
+echo 'Fix ownership for strict permissions.'
+time sudo chmod 775 -R web/sites/default/files
+time sudo chown -R ${APACHE_RUN_USER:=www-data} web/sites/default/files private config/sync
 
 #== Finish measuring script time.
 INIT_DURATION=$SECONDS
